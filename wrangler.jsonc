@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "classmate-zm",
+  "compatibility_date": "2026-05-31",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "classmate-zm"
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
+}
