@@ -3,7 +3,7 @@
    Important for the Zambian audience: schools with patchy connectivity, expensive data.
 */
 
-const SHELL_CACHE = 'classmate-zm-v10';
+const SHELL_CACHE = 'classmate-zm-v11';
 const SHELL = ['./', './index.html'];
 
 self.addEventListener('install', function(e){
