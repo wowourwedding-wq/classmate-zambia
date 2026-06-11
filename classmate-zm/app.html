@@ -3770,7 +3770,10 @@ function renderBackupStatus(){
     icon = '✅'; color = '#2a6e44'; bg = 'var(--green-bg)';
     msg = `Last backup <strong>${days === 0 ? 'today' : days === 1 ? 'yesterday' : days + ' days ago'}</strong> (${fmtDateLong(last)}). Your data is safe.`;
   }
-  el.innerHTML = `<div style="display:flex;gap:12px;align-items:center;padding:12px 16px;border-radius:11px;background:${bg};color:${color};font-size:14px;margin-bottom:6px"><span style="font-size:22px">${icon}</span><div>${msg}</div></div>`;
+  el.innerHTML = `<div style="display:flex;gap:12px;align-items:center;padding:12px 16px;border-radius:11px;background:${bg};color:${color};font-size:14px;margin-bottom:6px"><span style="font-size:22px">${icon}</span><div>${msg}</div></div>`
+    + (typeof hasPreWipeSnapshot === 'function' && hasPreWipeSnapshot()
+      ? `<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;padding:12px 16px;border-radius:11px;background:linear-gradient(135deg,#FBEAB5,#E8C97A);color:#5a4708;font-size:14px;margin-bottom:6px"><span style="font-size:22px">🛟</span><div style="flex:1;min-width:180px"><strong>Erased-data safety copy found.</strong> Data wiped during setup or a reset can be brought back.</div><button class="btn btn-gold btn-sm" onclick="restorePreWipeBackup()">↩️ Restore erased data</button></div>`
+      : '');
 }
 
 renderers.settings = function(){ bindInputs(); renderThemePicker(); renderEditionPicker(); renderBackupStatus(); };
@@ -4053,9 +4056,42 @@ function importData(input){
   r.readAsText(file); input.value='';
 }
 function confirmReset(){
-  showModal(`<h3>Delete all data?</h3><p class="modal-sub">This wipes everything from this device. No undo.</p><div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-danger" onclick="resetAll()">Yes, delete everything</button></div>`);
+  showModal(`<h3>Delete all data?</h3><p class="modal-sub">This wipes everything from this device. A hidden safety copy is kept — you can bring it back via Settings → Restore erased data.</p><div class="modal-actions"><button class="btn btn-ghost" onclick="closeModal()">Cancel</button><button class="btn btn-danger" onclick="resetAll()">Yes, delete everything</button></div>`);
 }
-function resetAll(){ localStorage.removeItem(LS_KEY); state = defaultState(); save(); closeModal(); bindInputs(); go('dashboard'); toast('All data deleted'); }
+function resetAll(){ stashPreWipeSnapshot(); localStorage.removeItem(LS_KEY); state = defaultState(); save(); closeModal(); bindInputs(); go('dashboard'); toast('All data deleted · safety copy kept in Settings → Restore'); }
+
+/* ---------- Pre-wipe safety net ----------
+   Any flow that erases the whole state (first-time setup wipe, Delete-all)
+   first stashes the current saved state under a sibling localStorage key,
+   so one wrong tap is never permanent. Restore from Settings → Backup card. */
+const PREWIPE_KEY = LS_KEY + '-prewipe';
+function stashPreWipeSnapshot(){
+  try {
+    const cur = localStorage.getItem(LS_KEY);
+    if(!cur) return;
+    /* Never replace a richer snapshot with a smaller one (e.g. wiping twice) */
+    const prev = localStorage.getItem(PREWIPE_KEY);
+    if(prev && prev.length > cur.length) return;
+    localStorage.setItem(PREWIPE_KEY, cur);
+  } catch(e){}
+}
+function hasPreWipeSnapshot(){
+  try { return !!localStorage.getItem(PREWIPE_KEY); } catch(e){ return false; }
+}
+function restorePreWipeBackup(){
+  let snap = null;
+  try { snap = localStorage.getItem(PREWIPE_KEY); } catch(e){}
+  if(!snap){ toast('No erased-data safety copy found on this device'); return; }
+  if(!confirm('Bring back the data that was on this device before it was erased? Your sign-in accounts are kept as they are now.')) return;
+  try {
+    const s = JSON.parse(snap);
+    const keepUsers = state.users, keepSession = state.currentSession;
+    state = Object.assign(defaultState(), s);
+    if(keepUsers && keepUsers.length){ state.users = keepUsers; state.currentSession = keepSession; }
+    save(); bindInputs(); go('dashboard');
+    toast('✓ Restored the data from before the erase');
+  } catch(e){ toast('The safety copy could not be read'); }
+}
 function showInstallHelp(){
   const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
   const html = isIOS
@@ -7823,12 +7859,19 @@ function authOverlay(html){
 }
 function closeAuthOverlay(){ const o = document.getElementById('auth-overlay'); if(o) o.remove(); }
 
+/* Per-app-open confirmation: sessionStorage clears when the app/tab is closed,
+   so every fresh open shows the login screen first — pre-filled with the
+   remembered user, one tap to enter. */
+function markAuthConfirmed(){ try { sessionStorage.setItem('cm-auth-ok','1'); } catch(e){} }
+function authConfirmedThisOpen(){ try { return sessionStorage.getItem('cm-auth-ok') === '1'; } catch(e){ return true; } }
+
 /* Boot-time gate. Call before enterApp / showWelcome. */
 function authGate(){
   state.users = state.users || [];
   if(!state.users.length){ showFirstTimeSetup(); return false; }
   const u = currentUser();
   if(!u){ showLoginScreen(); return false; }
+  if(!authConfirmedThisOpen()){ showLoginScreen(); return false; }
   return true;
 }
 
@@ -7853,8 +7896,8 @@ function showFirstTimeSetup(){
           <input id="au-pin2" type="password" inputmode="numeric" maxlength="6" placeholder="••••" style="width:100%;padding:11px 13px;border:1.5px solid #ddd;border-radius:9px;font-size:16px;letter-spacing:.2em;text-align:center;box-sizing:border-box"></div>
       </div>
       <label style="display:flex;gap:10px;align-items:flex-start;background:#FFF5DC;border:1px solid #E8C97A;border-radius:9px;padding:11px;cursor:pointer;font-size:13px">
-        <input type="checkbox" id="au-wipe" checked style="margin-top:3px;flex-shrink:0">
-        <span><strong>Start with a clean slate</strong> — clear any existing data on this device (students, lessons, profile etc.). Recommended for a fresh setup.</span>
+        <input type="checkbox" id="au-wipe" style="margin-top:3px;flex-shrink:0">
+        <span><strong>Start with a clean slate</strong> — erase data already on this device (students, lessons, profile etc.). <strong style="color:#c0392b">Leave UNTICKED to keep everything you have already entered.</strong> A safety copy is kept either way (Settings → Restore).</span>
       </label>
       <div id="au-err" style="font-size:13px;color:#c0392b;font-weight:600;min-height:18px"></div>
       <button id="au-submit" onclick="finishFirstTimeSetup()" style="background:linear-gradient(135deg,#1A2E4F,#0F1B30);color:#fff;border:none;border-radius:10px;padding:14px;font-weight:800;font-size:15px;cursor:pointer;margin-top:4px">🔐 Create Admin Account</button>
@@ -7881,6 +7924,7 @@ async function finishFirstTimeSetup(){
   const pinHash = await hashPin(pin);
 
   if(wipe){
+    stashPreWipeSnapshot();
     const fresh = defaultState();
     /* Keep users/session fields out of the reset and reapply */
     Object.keys(state).forEach(k=>{ if(k !== 'users' && k !== 'currentSession') state[k] = fresh[k]; });
@@ -7891,6 +7935,7 @@ async function finishFirstTimeSetup(){
     pinHash, createdAt: Date.now(), lastLogin: Date.now()
   }];
   state.currentSession = {userId: state.users[0].id, role: 'admin', loginTime: Date.now()};
+  markAuthConfirmed();
   state.teacher = state.teacher || {};
   state.teacher.name = name;
   state.teacher.email = email;
@@ -7907,16 +7952,21 @@ async function finishFirstTimeSetup(){
 
 function showLoginScreen(){
   const users = state.users || [];
+  const rememberedId = state.currentSession && state.currentSession.userId;
+  const remembered = users.find(u => u.id === rememberedId) || null;
   authOverlay(`
     <div style="text-align:center;margin-bottom:18px">
       <div style="font-size:42px">🔐</div>
       <h2 style="font-size:21px;margin:6px 0 4px;color:#1A2E4F;font-weight:900">Sign in to ClassMate</h2>
-      <p style="color:#666;font-size:14px;margin:0">Pick your name + enter your PIN</p>
+      <p style="color:#666;font-size:14px;margin:0">${remembered ? 'Welcome back — one tap and you\'re in' : 'Pick your name + enter your PIN'}</p>
     </div>
     <div style="display:flex;flex-direction:column;gap:11px">
+      ${remembered ? `
+      <button id="au-quick" onclick="quickContinue()" style="background:linear-gradient(135deg,#C9A227,#E8C97A);color:#1A2E4F;border:none;border-radius:12px;padding:16px;font-weight:900;font-size:16px;cursor:pointer;box-shadow:0 4px 14px rgba(201,162,39,.35)">👋 Continue as ${esc(remembered.name)} →</button>
+      <div style="text-align:center;color:#999;font-size:12px;margin:2px 0">— or sign in as someone else —</div>` : ''}
       <div><label style="font-size:12.5px;font-weight:700;color:#1A2E4F;display:block;margin-bottom:3px">Who are you?</label>
         <select id="au-user" style="width:100%;padding:12px 13px;border:1.5px solid #ddd;border-radius:9px;font-size:14.5px;box-sizing:border-box;background:#fff">
-          ${users.map(u=>`<option value="${esc(u.id)}">${esc(u.name)} · ${esc(AUTH_ROLES[u.role]?.n||u.role)}</option>`).join('')}
+          ${users.map(u=>`<option value="${esc(u.id)}" ${remembered && u.id===remembered.id ? 'selected' : ''}>${esc(u.name)} · ${esc(AUTH_ROLES[u.role]?.n||u.role)}</option>`).join('')}
         </select></div>
       <div><label style="font-size:12.5px;font-weight:700;color:#1A2E4F;display:block;margin-bottom:3px">Your PIN</label>
         <input id="au-pin" type="password" inputmode="numeric" maxlength="6" placeholder="••••" onkeypress="if(event.key==='Enter')attemptLogin()" style="width:100%;padding:13px;border:1.5px solid #ddd;border-radius:9px;font-size:18px;letter-spacing:.3em;text-align:center;box-sizing:border-box"></div>
@@ -7925,7 +7975,26 @@ function showLoginScreen(){
       <div style="text-align:center;font-size:12.5px;color:#999;margin-top:6px"><a href="#" onclick="forgotPinPrompt();return false" style="color:#1A2E4F">Forgot PIN?</a></div>
     </div>
   `);
-  setTimeout(()=>document.getElementById('au-pin').focus(), 80);
+  setTimeout(()=>{
+    const quick = document.getElementById('au-quick');
+    if(quick) quick.focus(); else document.getElementById('au-pin').focus();
+  }, 80);
+}
+
+/* One-tap entry for the remembered user (the person who signed in last on this
+   device). No PIN re-entry — switching to a DIFFERENT user still needs a PIN. */
+function quickContinue(){
+  const user = currentUser();
+  if(!user){ showLoginScreen(); return; }
+  state.currentSession.loginTime = Date.now();
+  user.lastLogin = Date.now();
+  markAuthConfirmed();
+  save();
+  closeAuthOverlay();
+  document.getElementById('view-landing').style.display = 'none';
+  document.getElementById('view-app').style.display = 'block';
+  if(typeof enterApp === 'function') enterApp();
+  setTimeout(()=>toast('Welcome back, ' + user.name), 200);
 }
 
 async function attemptLogin(){
@@ -7941,6 +8010,7 @@ async function attemptLogin(){
   if(!ok){ err('Wrong PIN — try again'); btn.disabled = false; btn.textContent = 'Sign in →'; document.getElementById('au-pin').value = ''; return; }
   state.currentSession = {userId, role: user.role, loginTime: Date.now()};
   user.lastLogin = Date.now();
+  markAuthConfirmed();
   save();
   closeAuthOverlay();
   /* Go straight into the planner, bypassing the welcome screen */
@@ -8929,6 +8999,7 @@ window.saveDirEntry = function(id, isEdit){
 function logout(){
   if(!confirm('Sign out?')) return;
   state.currentSession = null;
+  try { sessionStorage.removeItem('cm-auth-ok'); } catch(e){}
   save();
   showLoginScreen();
 }
